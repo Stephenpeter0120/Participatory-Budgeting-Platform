@@ -7,6 +7,8 @@
 (define-constant ERR_PROPOSAL_NOT_APPROVED (err u105))
 (define-constant ERR_ALREADY_EXECUTED (err u106))
 (define-constant ERR_INVALID_AMOUNT (err u107))
+(define-constant ERR_CANNOT_DELEGATE_TO_SELF (err u108))
+(define-constant ERR_DELEGATE_NOT_REGISTERED (err u109))
 
 (define-data-var next-proposal-id uint u1)
 (define-data-var total-budget uint u0)
@@ -204,4 +206,82 @@
     })
     none
   )
+)
+
+
+
+(define-map delegations
+  principal
+  principal
+)
+
+(define-map delegate-power
+  principal
+  uint
+)
+
+(define-public (delegate-voting-power (delegate principal))
+  (let
+    (
+      (delegator tx-sender)
+      (delegator-power (default-to u0 (map-get? citizen-voting-power delegator)))
+      (current-delegate-power (default-to u0 (map-get? delegate-power delegate)))
+      (existing-delegation (map-get? delegations delegator))
+    )
+    (asserts! (> delegator-power u0) ERR_UNAUTHORIZED)
+    (asserts! (not (is-eq delegator delegate)) ERR_CANNOT_DELEGATE_TO_SELF)
+    (asserts! (> (default-to u0 (map-get? citizen-voting-power delegate)) u0) ERR_DELEGATE_NOT_REGISTERED)
+    
+    (match existing-delegation
+      old-delegate 
+      (map-set delegate-power old-delegate 
+        (- (default-to u0 (map-get? delegate-power old-delegate)) delegator-power))
+      true
+    )
+    
+    (map-set delegations delegator delegate)
+    (map-set delegate-power delegate (+ current-delegate-power delegator-power))
+    (ok true)
+  )
+)
+
+(define-public (revoke-delegation)
+  (let
+    (
+      (delegator tx-sender)
+      (delegator-power (default-to u0 (map-get? citizen-voting-power delegator)))
+    )
+    (match (map-get? delegations delegator)
+      delegate
+      (begin
+        (map-delete delegations delegator)
+        (map-set delegate-power delegate 
+          (- (default-to u0 (map-get? delegate-power delegate)) delegator-power))
+        (ok true)
+      )
+      ERR_UNAUTHORIZED
+    )
+  )
+)
+
+(define-private (get-effective-voting-power (voter principal))
+  (let
+    (
+      (base-power (default-to u0 (map-get? citizen-voting-power voter)))
+      (delegated-power (default-to u0 (map-get? delegate-power voter)))
+    )
+    (+ base-power delegated-power)
+  )
+)
+
+(define-read-only (get-delegation (delegator principal))
+  (map-get? delegations delegator)
+)
+
+(define-read-only (get-delegated-power (delegate principal))
+  (default-to u0 (map-get? delegate-power delegate))
+)
+
+(define-read-only (get-total-voting-power (voter principal))
+  (get-effective-voting-power voter)
 )
