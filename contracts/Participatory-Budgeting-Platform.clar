@@ -10,6 +10,10 @@
 (define-constant ERR_CANNOT_DELEGATE_TO_SELF (err u108))
 (define-constant ERR_DELEGATE_NOT_REGISTERED (err u109))
 
+(define-constant ERR_CATEGORY_NOT_FOUND (err u110))
+(define-constant ERR_CATEGORY_BUDGET_EXCEEDED (err u111))
+(define-constant ERR_INVALID_CATEGORY (err u112))
+
 (define-data-var next-proposal-id uint u1)
 (define-data-var total-budget uint u0)
 (define-data-var voting-period uint u1008)
@@ -284,4 +288,113 @@
 
 (define-read-only (get-total-voting-power (voter principal))
   (get-effective-voting-power voter)
+)
+
+(define-map budget-categories
+  (string-ascii 50)
+  {
+    total-budget: uint,
+    allocated: uint,
+    active: bool
+  }
+)
+
+(define-map proposal-categories
+  uint
+  (string-ascii 50)
+)
+
+(define-public (create-budget-category (name (string-ascii 50)) (budget uint))
+  (begin
+    (asserts! (is-eq tx-sender CONTRACT_OWNER) ERR_UNAUTHORIZED)
+    (asserts! (> budget u0) ERR_INVALID_AMOUNT)
+    (map-set budget-categories name {
+      total-budget: budget,
+      allocated: u0,
+      active: true
+    })
+    (ok true)
+  )
+)
+
+(define-public (update-category-budget (name (string-ascii 50)) (new-budget uint))
+  (let
+    (
+      (category (unwrap! (map-get? budget-categories name) ERR_CATEGORY_NOT_FOUND))
+    )
+    (asserts! (is-eq tx-sender CONTRACT_OWNER) ERR_UNAUTHORIZED)
+    (asserts! (>= new-budget (get allocated category)) ERR_INVALID_AMOUNT)
+    (map-set budget-categories name (merge category { total-budget: new-budget }))
+    (ok true)
+  )
+)
+
+(define-public (submit-categorized-proposal 
+  (title (string-ascii 100)) 
+  (description (string-ascii 500)) 
+  (amount uint)
+  (category (string-ascii 50)))
+  (let
+    (
+      (proposal-id (var-get next-proposal-id))
+      (current-block stacks-block-height)
+      (category-info (unwrap! (map-get? budget-categories category) ERR_CATEGORY_NOT_FOUND))
+    )
+    (asserts! (> amount u0) ERR_INVALID_AMOUNT)
+    (asserts! (get active category-info) ERR_INVALID_CATEGORY)
+    (asserts! (<= (+ amount (get allocated category-info)) (get total-budget category-info)) ERR_CATEGORY_BUDGET_EXCEEDED)
+    (map-set proposals proposal-id
+      {
+        title: title,
+        description: description,
+        amount: amount,
+        proposer: tx-sender,
+        votes-for: u0,
+        votes-against: u0,
+        status: "active",
+        created-at: current-block,
+        executed: false
+      }
+    )
+    (map-set proposal-categories proposal-id category)
+    (var-set next-proposal-id (+ proposal-id u1))
+    (ok proposal-id)
+  )
+)
+
+(define-public (execute-categorized-proposal (proposal-id uint))
+  (let
+    (
+      (proposal (unwrap! (map-get? proposals proposal-id) ERR_PROPOSAL_NOT_FOUND))
+      (category-name (unwrap! (map-get? proposal-categories proposal-id) ERR_CATEGORY_NOT_FOUND))
+      (category (unwrap! (map-get? budget-categories category-name) ERR_CATEGORY_NOT_FOUND))
+      (current-budget (var-get total-budget))
+    )
+    (asserts! (is-eq tx-sender CONTRACT_OWNER) ERR_UNAUTHORIZED)
+    (asserts! (is-eq (get status proposal) "approved") ERR_PROPOSAL_NOT_APPROVED)
+    (asserts! (not (get executed proposal)) ERR_ALREADY_EXECUTED)
+    (asserts! (>= current-budget (get amount proposal)) ERR_INSUFFICIENT_FUNDS)
+    (asserts! (<= (+ (get amount proposal) (get allocated category)) (get total-budget category)) ERR_CATEGORY_BUDGET_EXCEEDED)
+    
+    (var-set total-budget (- current-budget (get amount proposal)))
+    (map-set budget-categories category-name 
+      (merge category { allocated: (+ (get allocated category) (get amount proposal)) }))
+    (map-set proposals proposal-id (merge proposal { executed: true, status: "executed" }))
+    (ok true)
+  )
+)
+
+(define-read-only (get-category-budget (name (string-ascii 50)))
+  (map-get? budget-categories name)
+)
+
+(define-read-only (get-proposal-category (proposal-id uint))
+  (map-get? proposal-categories proposal-id)
+)
+
+(define-read-only (get-category-remaining (name (string-ascii 50)))
+  (match (map-get? budget-categories name)
+    category (some (- (get total-budget category) (get allocated category)))
+    none
+  )
 )
