@@ -18,6 +18,10 @@
 (define-data-var total-budget uint u0)
 (define-data-var voting-period uint u1008)
 
+(define-constant ERR_AMENDMENT_LIMIT_EXCEEDED (err u113))
+
+(define-data-var max-amendments uint u3)
+
 (define-map proposals
   uint
   {
@@ -397,4 +401,74 @@
     category (some (- (get total-budget category) (get allocated category)))
     none
   )
+)
+
+
+(define-map proposal-amendments
+  uint
+  {
+    amendment-count: uint,
+    last-amended-at: uint,
+    original-title: (string-ascii 100),
+    original-description: (string-ascii 500),
+    original-amount: uint
+  }
+)
+
+(define-public (amend-proposal 
+  (proposal-id uint) 
+  (new-title (string-ascii 100)) 
+  (new-description (string-ascii 500)) 
+  (new-amount uint))
+  (let
+    (
+      (proposal (unwrap! (map-get? proposals proposal-id) ERR_PROPOSAL_NOT_FOUND))
+      (amendment-info (default-to 
+        { amendment-count: u0, last-amended-at: u0, 
+          original-title: (get title proposal), 
+          original-description: (get description proposal), 
+          original-amount: (get amount proposal) }
+        (map-get? proposal-amendments proposal-id)))
+      (current-block stacks-block-height)
+      (voting-deadline (+ (get created-at proposal) (var-get voting-period)))
+    )
+    (asserts! (is-eq tx-sender (get proposer proposal)) ERR_UNAUTHORIZED)
+    (asserts! (is-eq (get status proposal) "active") ERR_VOTING_CLOSED)
+    (asserts! (<= current-block voting-deadline) ERR_VOTING_CLOSED)
+    (asserts! (> new-amount u0) ERR_INVALID_AMOUNT)
+    (asserts! (< (get amendment-count amendment-info) (var-get max-amendments)) ERR_AMENDMENT_LIMIT_EXCEEDED)
+    
+    (map-set proposals proposal-id
+      (merge proposal {
+        title: new-title,
+        description: new-description,
+        amount: new-amount,
+        votes-for: u0,
+        votes-against: u0
+      }))
+    
+    (map-set proposal-amendments proposal-id
+      (merge amendment-info {
+        amendment-count: (+ (get amendment-count amendment-info) u1),
+        last-amended-at: current-block
+      }))
+    
+    (ok true)
+  )
+)
+
+(define-public (set-max-amendments (limit uint))
+  (begin
+    (asserts! (is-eq tx-sender CONTRACT_OWNER) ERR_UNAUTHORIZED)
+    (var-set max-amendments limit)
+    (ok true)
+  )
+)
+
+(define-read-only (get-amendment-info (proposal-id uint))
+  (map-get? proposal-amendments proposal-id)
+)
+
+(define-read-only (get-max-amendments)
+  (var-get max-amendments)
 )
