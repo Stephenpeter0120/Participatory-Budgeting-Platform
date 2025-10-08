@@ -14,6 +14,11 @@
 (define-constant ERR_CATEGORY_BUDGET_EXCEEDED (err u111))
 (define-constant ERR_INVALID_CATEGORY (err u112))
 
+(define-constant ERR_MILESTONE_NOT_FOUND (err u114))
+(define-constant ERR_MILESTONE_ALREADY_COMPLETED (err u115))
+(define-constant ERR_NO_MILESTONES (err u116))
+(define-constant ERR_TOTAL_EXCEEDS_PROPOSAL (err u117))
+
 (define-data-var next-proposal-id uint u1)
 (define-data-var total-budget uint u0)
 (define-data-var voting-period uint u1008)
@@ -471,4 +476,87 @@
 
 (define-read-only (get-max-amendments)
   (var-get max-amendments)
+)
+
+(define-map proposal-milestones
+  { proposal-id: uint, milestone-index: uint }
+  {
+    description: (string-ascii 200),
+    amount: uint,
+    completed: bool,
+    completed-at: uint
+  }
+)
+
+(define-map proposal-milestone-count
+  uint
+  uint
+)
+
+(define-public (create-milestone 
+  (proposal-id uint) 
+  (description (string-ascii 200)) 
+  (amount uint))
+  (let
+    (
+      (proposal (unwrap! (map-get? proposals proposal-id) ERR_PROPOSAL_NOT_FOUND))
+      (current-count (default-to u0 (map-get? proposal-milestone-count proposal-id)))
+      (total-milestone-amount (+ (get-total-milestone-amount proposal-id) amount))
+    )
+    (asserts! (is-eq tx-sender (get proposer proposal)) ERR_UNAUTHORIZED)
+    (asserts! (is-eq (get status proposal) "active") ERR_VOTING_CLOSED)
+    (asserts! (<= total-milestone-amount (get amount proposal)) ERR_TOTAL_EXCEEDS_PROPOSAL)
+    (asserts! (> amount u0) ERR_INVALID_AMOUNT)
+    
+    (map-set proposal-milestones { proposal-id: proposal-id, milestone-index: current-count }
+      {
+        description: description,
+        amount: amount,
+        completed: false,
+        completed-at: u0
+      })
+    (map-set proposal-milestone-count proposal-id (+ current-count u1))
+    (ok current-count)
+  )
+)
+
+(define-public (complete-milestone (proposal-id uint) (milestone-index uint))
+  (let
+    (
+      (proposal (unwrap! (map-get? proposals proposal-id) ERR_PROPOSAL_NOT_FOUND))
+      (milestone (unwrap! (map-get? proposal-milestones { proposal-id: proposal-id, milestone-index: milestone-index }) ERR_MILESTONE_NOT_FOUND))
+      (current-block stacks-block-height)
+      (current-budget (var-get total-budget))
+    )
+    (asserts! (is-eq tx-sender CONTRACT_OWNER) ERR_UNAUTHORIZED)
+    (asserts! (is-eq (get status proposal) "approved") ERR_PROPOSAL_NOT_APPROVED)
+    (asserts! (not (get completed milestone)) ERR_MILESTONE_ALREADY_COMPLETED)
+    (asserts! (>= current-budget (get amount milestone)) ERR_INSUFFICIENT_FUNDS)
+    
+    (var-set total-budget (- current-budget (get amount milestone)))
+    (map-set proposal-milestones { proposal-id: proposal-id, milestone-index: milestone-index }
+      (merge milestone { completed: true, completed-at: current-block }))
+    (ok true)
+  )
+)
+
+(define-private (get-total-milestone-amount (proposal-id uint))
+  (let ((count (default-to u0 (map-get? proposal-milestone-count proposal-id))))
+    (fold + (map get-milestone-amount-helper (list u0 u1 u2 u3 u4 u5 u6 u7 u8 u9)) u0)
+  )
+)
+
+(define-private (get-milestone-amount-helper (index uint))
+  (match (map-get? proposal-milestones { proposal-id: u0, milestone-index: index })
+    milestone (get amount milestone)
+    u0
+  )
+)
+
+(define-read-only (get-milestone (proposal-id uint) (milestone-index uint))
+  (map-get? proposal-milestones { proposal-id: proposal-id, milestone-index: milestone-index })
+)
+
+(define-read-only (get-milestone-count (proposal-id uint))
+  (default-to u0 (map-get? proposal-milestone-count proposal-id))
 )
