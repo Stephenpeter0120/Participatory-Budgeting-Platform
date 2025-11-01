@@ -560,3 +560,73 @@
 (define-read-only (get-milestone-count (proposal-id uint))
   (default-to u0 (map-get? proposal-milestone-count proposal-id))
 )
+
+(define-constant ERR_INVALID_SENTIMENT (err u118))
+
+(define-map sentiment-votes
+  { proposal-id: uint, voter: principal }
+  { rating: uint, timestamp: uint }
+)
+
+(define-map proposal-sentiment
+  uint
+  {
+    total-rating: uint,
+    rating-count: uint,
+    five-star: uint,
+    four-star: uint,
+    three-star: uint,
+    two-star: uint,
+    one-star: uint
+  }
+)
+
+(define-public (cast-sentiment-vote (proposal-id uint) (rating uint))
+  (let
+    (
+      (proposal (unwrap! (map-get? proposals proposal-id) ERR_PROPOSAL_NOT_FOUND))
+      (voter-power (default-to u0 (map-get? citizen-voting-power tx-sender)))
+      (current-sentiment (default-to 
+        { total-rating: u0, rating-count: u0, five-star: u0, four-star: u0, three-star: u0, two-star: u0, one-star: u0 }
+        (map-get? proposal-sentiment proposal-id)))
+      (current-block stacks-block-height)
+      (existing-vote (map-get? sentiment-votes { proposal-id: proposal-id, voter: tx-sender }))
+    )
+    (asserts! (> voter-power u0) ERR_UNAUTHORIZED)
+    (asserts! (and (>= rating u1) (<= rating u5)) ERR_INVALID_SENTIMENT)
+    
+    (map-set sentiment-votes { proposal-id: proposal-id, voter: tx-sender }
+      { rating: rating, timestamp: current-block })
+    
+    (map-set proposal-sentiment proposal-id
+      (merge current-sentiment {
+        total-rating: (+ (get total-rating current-sentiment) rating),
+        rating-count: (+ (get rating-count current-sentiment) u1),
+        five-star: (+ (get five-star current-sentiment) (if (is-eq rating u5) u1 u0)),
+        four-star: (+ (get four-star current-sentiment) (if (is-eq rating u4) u1 u0)),
+        three-star: (+ (get three-star current-sentiment) (if (is-eq rating u3) u1 u0)),
+        two-star: (+ (get two-star current-sentiment) (if (is-eq rating u2) u1 u0)),
+        one-star: (+ (get one-star current-sentiment) (if (is-eq rating u1) u1 u0))
+      }))
+    (ok true)
+  )
+)
+
+(define-read-only (get-sentiment-vote (proposal-id uint) (voter principal))
+  (map-get? sentiment-votes { proposal-id: proposal-id, voter: voter })
+)
+
+(define-read-only (get-proposal-sentiment (proposal-id uint))
+  (map-get? proposal-sentiment proposal-id)
+)
+
+(define-read-only (get-average-sentiment (proposal-id uint))
+  (match (map-get? proposal-sentiment proposal-id)
+    sentiment
+    (if (> (get rating-count sentiment) u0)
+      (some (/ (* (get total-rating sentiment) u100) (get rating-count sentiment)))
+      none
+    )
+    none
+  )
+)
